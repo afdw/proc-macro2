@@ -4,7 +4,7 @@ use std::fmt::{self, Debug, Display};
 use std::iter::FromIterator;
 use std::ops::RangeBounds;
 use std::panic;
-#[cfg(super_unstable)]
+#[cfg(span_locations)]
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -357,13 +357,13 @@ impl Debug for TokenTreeIter {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-#[cfg(super_unstable)]
+#[cfg(span_locations)]
 pub(crate) enum SourceFile {
     Compiler(proc_macro::SourceFile),
     Fallback(fallback::SourceFile),
 }
 
-#[cfg(super_unstable)]
+#[cfg(span_locations)]
 impl SourceFile {
     fn nightly(sf: proc_macro::SourceFile) -> Self {
         SourceFile::Compiler(sf)
@@ -385,7 +385,7 @@ impl SourceFile {
     }
 }
 
-#[cfg(super_unstable)]
+#[cfg(span_locations)]
 impl Debug for SourceFile {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -408,6 +408,15 @@ pub(crate) enum Span {
 }
 
 impl Span {
+    #[cfg(span_locations)]
+    pub fn new_custom(source_file: &str, start: LineColumn, end: LineColumn) -> Span {
+        Span::Fallback(fallback::Span::new_custom(
+            source_file,
+            fallback::LineColumn { line: start.line, column: start.column },
+            fallback::LineColumn { line: end.line, column: end.column },
+        ))
+    }
+
     pub fn call_site() -> Span {
         if inside_proc_macro() {
             Span::Compiler(proc_macro::Span::call_site())
@@ -469,7 +478,7 @@ impl Span {
         }
     }
 
-    #[cfg(super_unstable)]
+    #[cfg(span_locations)]
     pub fn source_file(&self) -> SourceFile {
         match self {
             Span::Compiler(s) => SourceFile::nightly(s.source_file()),

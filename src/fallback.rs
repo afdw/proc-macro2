@@ -14,6 +14,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::vec;
 use unicode_xid::UnicodeXID;
+#[cfg(span_locations)]
+use std::collections::HashMap;
+#[cfg(span_locations)]
+use std::hash::{Hash, Hasher};
+#[cfg(span_locations)]
+use std::collections::hash_map::DefaultHasher;
 
 /// Force use of proc-macro2's fallback implementation of the API for now, even
 /// if the compiler's implementation is available.
@@ -129,14 +135,17 @@ impl Drop for TokenStream {
 
 #[cfg(span_locations)]
 fn get_cursor(src: &str) -> Cursor {
-    // Create a dummy file & add it to the source map
     SOURCE_MAP.with(|cm| {
         let mut cm = cm.borrow_mut();
-        let name = format!("<parsed string {}>", cm.files.len());
-        let span = cm.add_file(&name, src);
+        let name = format!("<parsed string {}>", calculate_hash(&src));
+        let source_file_id = cm.add_file(&name);
         Cursor {
             rest: src,
-            off: span.lo,
+            source_file_id,
+            line_column: LineColumn {
+                line: 1,
+                column: 0
+            }
         }
     })
 }
@@ -290,7 +299,7 @@ impl Debug for SourceFile {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct LineColumn {
     pub line: usize,
     pub column: usize,
@@ -299,123 +308,59 @@ pub(crate) struct LineColumn {
 #[cfg(span_locations)]
 thread_local! {
     static SOURCE_MAP: RefCell<SourceMap> = RefCell::new(SourceMap {
-        // NOTE: We start with a single dummy file which all call_site() and
-        // def_site() spans reference.
-        files: vec![FileInfo {
-            #[cfg(procmacro2_semver_exempt)]
-            name: "<unspecified>".to_owned(),
-            span: Span { lo: 0, hi: 0 },
-            lines: vec![0],
-        }],
+        files: HashMap::new(),
     });
 }
 
 #[cfg(span_locations)]
-struct FileInfo {
-    #[cfg(procmacro2_semver_exempt)]
-    name: String,
-    span: Span,
-    lines: Vec<usize>,
-}
-
-#[cfg(span_locations)]
-impl FileInfo {
-    fn offset_line_column(&self, offset: usize) -> LineColumn {
-        assert!(self.span_within(Span {
-            lo: offset as u32,
-            hi: offset as u32
-        }));
-        let offset = offset - self.span.lo as usize;
-        match self.lines.binary_search(&offset) {
-            Ok(found) => LineColumn {
-                line: found + 1,
-                column: 0,
-            },
-            Err(idx) => LineColumn {
-                line: idx,
-                column: offset - self.lines[idx - 1],
-            },
-        }
-    }
-
-    fn span_within(&self, span: Span) -> bool {
-        span.lo >= self.span.lo && span.hi <= self.span.hi
-    }
-}
-
-/// Computes the offsets of each line in the given source string
-/// and the total number of characters
-#[cfg(span_locations)]
-fn lines_offsets(s: &str) -> (usize, Vec<usize>) {
-    let mut lines = vec![0];
-    let mut total = 0;
-
-    for ch in s.chars() {
-        total += 1;
-        if ch == '\n' {
-            lines.push(total);
-        }
-    }
-
-    (total, lines)
+fn calculate_hash<T: Hash>(t: &T) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
 }
 
 #[cfg(span_locations)]
 struct SourceMap {
-    files: Vec<FileInfo>,
+    files: HashMap<u64, String>,
 }
 
 #[cfg(span_locations)]
 impl SourceMap {
-    fn next_start_pos(&self) -> u32 {
-        // Add 1 so there's always space between files.
-        //
-        // We'll always have at least 1 file, as we initialize our files list
-        // with a dummy file.
-        self.files.last().unwrap().span.hi + 1
+    fn add_file(&mut self, name: &str) -> u64 {
+        let source_file_id = calculate_hash(&name);
+        self.files.entry(source_file_id).or_insert_with(|| name.to_string());
+        source_file_id
     }
 
-    fn add_file(&mut self, name: &str, src: &str) -> Span {
-        let (len, lines) = lines_offsets(src);
-        let lo = self.next_start_pos();
-        // XXX(nika): Shouild we bother doing a checked cast or checked add here?
-        let span = Span {
-            lo,
-            hi: lo + (len as u32),
-        };
-
-        self.files.push(FileInfo {
-            #[cfg(procmacro2_semver_exempt)]
-            name: name.to_owned(),
-            span,
-            lines,
-        });
-
-        #[cfg(not(procmacro2_semver_exempt))]
-        let _ = name;
-
-        span
-    }
-
-    fn fileinfo(&self, span: Span) -> &FileInfo {
-        for file in &self.files {
-            if file.span_within(span) {
-                return file;
-            }
-        }
-        panic!("Invalid span with no related FileInfo!");
+    fn get_file(&self, source_file_id: u64) -> String {
+        self.files.get(&source_file_id).unwrap().clone()
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Span {
     #[cfg(span_locations)]
-    pub(crate) lo: u32,
+    pub(crate) source_file_id: u64,
     #[cfg(span_locations)]
-    pub(crate) hi: u32,
+    pub(crate) lo: LineColumn,
+    #[cfg(span_locations)]
+    pub(crate) hi: LineColumn,
 }
 
 impl Span {
+    #[cfg(span_locations)]
+    pub fn new_custom(source_file: &str, start: LineColumn, end: LineColumn) -> Span {
+        SOURCE_MAP.with(|cm| {
+            let mut cm = cm.borrow_mut();
+            let source_file_id = cm.add_file(source_file);
+            Span {
+                source_file_id,
+                lo: start,
+                hi: end,
+            }
+        })
+    }
+
     #[cfg(not(span_locations))]
     pub fn call_site() -> Span {
         Span {}
@@ -423,7 +368,15 @@ impl Span {
 
     #[cfg(span_locations)]
     pub fn call_site() -> Span {
-        Span { lo: 0, hi: 0 }
+        SOURCE_MAP.with(|cm| {
+            let mut cm = cm.borrow_mut();
+            let source_file_id = cm.add_file("<site>");
+            Span {
+                source_file_id,
+                lo: LineColumn { line: 0, column: 0 },
+                hi: LineColumn { line: 0, column: 0 },
+            }
+        })
     }
 
     #[cfg(hygiene)]
@@ -447,33 +400,25 @@ impl Span {
         other
     }
 
-    #[cfg(procmacro2_semver_exempt)]
+    #[cfg(span_locations)]
     pub fn source_file(&self) -> SourceFile {
         SOURCE_MAP.with(|cm| {
             let cm = cm.borrow();
-            let fi = cm.fileinfo(*self);
+            let name = cm.get_file(self.source_file_id);
             SourceFile {
-                path: Path::new(&fi.name).to_owned(),
+                path: name.into(),
             }
         })
     }
 
     #[cfg(span_locations)]
     pub fn start(&self) -> LineColumn {
-        SOURCE_MAP.with(|cm| {
-            let cm = cm.borrow();
-            let fi = cm.fileinfo(*self);
-            fi.offset_line_column(self.lo as usize)
-        })
+        self.lo
     }
 
     #[cfg(span_locations)]
     pub fn end(&self) -> LineColumn {
-        SOURCE_MAP.with(|cm| {
-            let cm = cm.borrow();
-            let fi = cm.fileinfo(*self);
-            fi.offset_line_column(self.hi as usize)
-        })
+        self.hi
     }
 
     #[cfg(not(span_locations))]
@@ -483,17 +428,15 @@ impl Span {
 
     #[cfg(span_locations)]
     pub fn join(&self, other: Span) -> Option<Span> {
-        SOURCE_MAP.with(|cm| {
-            let cm = cm.borrow();
-            // If `other` is not within the same FileInfo as us, return None.
-            if !cm.fileinfo(*self).span_within(other) {
-                return None;
-            }
+        if self.source_file_id == other.source_file_id {
             Some(Span {
+                source_file_id: self.source_file_id,
                 lo: cmp::min(self.lo, other.lo),
-                hi: cmp::max(self.hi, other.hi),
+                hi: cmp::max(self.hi, other.hi)
             })
-        })
+        } else {
+            None
+        }
     }
 
     #[cfg(not(span_locations))]
@@ -502,10 +445,14 @@ impl Span {
     }
 
     #[cfg(span_locations)]
-    fn first_byte(self) -> Self {
+    fn first_byte(self) -> Span {
         Span {
+            source_file_id: self.source_file_id,
             lo: self.lo,
-            hi: cmp::min(self.lo.saturating_add(1), self.hi),
+            hi: LineColumn {
+                line: self.lo.line,
+                column: self.lo.column + 1,
+            },
         }
     }
 
@@ -515,9 +462,13 @@ impl Span {
     }
 
     #[cfg(span_locations)]
-    fn last_byte(self) -> Self {
+    fn last_byte(self) -> Span {
         Span {
-            lo: cmp::max(self.hi.saturating_sub(1), self.lo),
+            source_file_id: self.source_file_id,
+            lo: LineColumn {
+                line: self.hi.line,
+                column: self.hi.column - 1,
+            },
             hi: self.hi,
         }
     }
@@ -526,7 +477,7 @@ impl Span {
 impl Debug for Span {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         #[cfg(span_locations)]
-        return write!(f, "bytes({}..{})", self.lo, self.hi);
+        return write!(f, "Span({:?}, {}:{}..{}:{})", self.source_file().path, self.lo.line, self.lo.column, self.hi.line, self.hi.column);
 
         #[cfg(not(span_locations))]
         write!(f, "Span")
@@ -536,7 +487,7 @@ impl Debug for Span {
 pub(crate) fn debug_span_field_if_nontrivial(debug: &mut fmt::DebugStruct, span: Span) {
     #[cfg(span_locations)]
     {
-        if span.lo == 0 && span.hi == 0 {
+        if span.lo.line == 0 && span.lo.column == 0 && span.hi.line == 0 && span.hi.column == 0 {
             return;
         }
     }

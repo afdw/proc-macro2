@@ -1,6 +1,6 @@
-use crate::fallback::{
-    is_ident_continue, is_ident_start, Group, LexError, Literal, Span, TokenStream,
-};
+use crate::fallback::{is_ident_continue, is_ident_start, Group, LexError, Literal, Span, TokenStream};
+#[cfg(span_locations)]
+use crate::fallback::LineColumn;
 use crate::{Delimiter, Punct, Spacing, TokenTree};
 use std::char;
 use std::str::{Bytes, CharIndices, Chars};
@@ -9,7 +9,9 @@ use std::str::{Bytes, CharIndices, Chars};
 pub(crate) struct Cursor<'a> {
     pub rest: &'a str,
     #[cfg(span_locations)]
-    pub off: u32,
+    pub(crate) source_file_id: u64,
+    #[cfg(span_locations)]
+    pub line_column: LineColumn,
 }
 
 impl<'a> Cursor<'a> {
@@ -18,7 +20,22 @@ impl<'a> Cursor<'a> {
         Cursor {
             rest,
             #[cfg(span_locations)]
-            off: self.off + _front.chars().count() as u32,
+            source_file_id: self.source_file_id,
+            #[cfg(span_locations)]
+            line_column: {
+                let split = _front.split('\n').collect::<Vec<_>>();
+                if split.len() == 1 {
+                    LineColumn {
+                        line: self.line_column.line,
+                        column: self.line_column.column + split[0].len(),
+                    }
+                } else {
+                    LineColumn {
+                        line: self.line_column.line + (split.len() - 1),
+                        column: split.last().unwrap().len(),
+                    }
+                }
+            },
         }
     }
 
@@ -163,7 +180,7 @@ pub(crate) fn token_stream(mut input: Cursor) -> Result<TokenStream, LexError> {
         }
 
         #[cfg(span_locations)]
-        let lo = input.off;
+        let lo = input.line_column;
 
         let first = match input.bytes().next() {
             Some(first) => first,
@@ -172,7 +189,7 @@ pub(crate) fn token_stream(mut input: Cursor) -> Result<TokenStream, LexError> {
                 #[cfg(span_locations)]
                 Some((lo, _frame)) => {
                     return Err(LexError {
-                        span: Span { lo: *lo, hi: *lo },
+                        span: Span { source_file_id: input.source_file_id, lo: *lo, hi: *lo },
                     })
                 }
                 #[cfg(not(span_locations))]
@@ -212,9 +229,11 @@ pub(crate) fn token_stream(mut input: Cursor) -> Result<TokenStream, LexError> {
             let mut g = Group::new(open_delimiter, TokenStream { inner: trees });
             g.set_span(Span {
                 #[cfg(span_locations)]
+                source_file_id: input.source_file_id,
+                #[cfg(span_locations)]
                 lo,
                 #[cfg(span_locations)]
-                hi: input.off,
+                hi: input.line_column,
             });
             trees = outer;
             trees.push(TokenTree::Group(crate::Group::_new_stable(g)));
@@ -225,9 +244,11 @@ pub(crate) fn token_stream(mut input: Cursor) -> Result<TokenStream, LexError> {
             };
             tt.set_span(crate::Span::_new_stable(Span {
                 #[cfg(span_locations)]
+                source_file_id: input.source_file_id,
+                #[cfg(span_locations)]
                 lo,
                 #[cfg(span_locations)]
-                hi: rest.off,
+                hi: rest.line_column,
             }));
             trees.push(tt);
             input = rest;
@@ -241,9 +262,11 @@ fn lex_error(cursor: Cursor) -> LexError {
     LexError {
         span: Span {
             #[cfg(span_locations)]
-            lo: cursor.off,
+            source_file_id: cursor.source_file_id,
             #[cfg(span_locations)]
-            hi: cursor.off,
+            lo: cursor.line_column,
+            #[cfg(span_locations)]
+            hi: cursor.line_column,
         },
     }
 }
@@ -789,13 +812,15 @@ fn punct_char(input: Cursor) -> PResult<char> {
 
 fn doc_comment(input: Cursor) -> PResult<Vec<TokenTree>> {
     #[cfg(span_locations)]
-    let lo = input.off;
+    let lo = input.line_column;
     let (rest, (comment, inner)) = doc_comment_contents(input)?;
     let span = crate::Span::_new_stable(Span {
         #[cfg(span_locations)]
+        source_file_id: input.source_file_id,
+        #[cfg(span_locations)]
         lo,
         #[cfg(span_locations)]
-        hi: rest.off,
+        hi: rest.line_column,
     });
 
     let mut scan_for_bare_cr = comment;

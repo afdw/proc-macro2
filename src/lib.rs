@@ -111,7 +111,7 @@ use std::fmt::{self, Debug, Display};
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
 use std::ops::RangeBounds;
-#[cfg(procmacro2_semver_exempt)]
+#[cfg(span_locations)]
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -273,15 +273,14 @@ impl Error for LexError {}
 /// The source file of a given `Span`.
 ///
 /// This type is semver exempt and not exposed by default.
-#[cfg(procmacro2_semver_exempt)]
-#[cfg_attr(doc_cfg, doc(cfg(procmacro2_semver_exempt)))]
+#[cfg(span_locations)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct SourceFile {
     inner: imp::SourceFile,
     _marker: Marker,
 }
 
-#[cfg(procmacro2_semver_exempt)]
+#[cfg(span_locations)]
 impl SourceFile {
     fn _new(inner: imp::SourceFile) -> Self {
         SourceFile {
@@ -314,7 +313,7 @@ impl SourceFile {
     }
 }
 
-#[cfg(procmacro2_semver_exempt)]
+#[cfg(span_locations)]
 impl Debug for SourceFile {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Debug::fmt(&self.inner, f)
@@ -372,6 +371,15 @@ impl Span {
             inner: inner.into(),
             _marker: Marker,
         }
+    }
+
+    #[cfg(span_locations)]
+    pub fn new_custom(source_file: &str, start: LineColumn, end: LineColumn) -> Span {
+        Span::_new(imp::Span::new_custom(
+            source_file,
+            imp::LineColumn { line: start.line, column: start.column },
+            imp::LineColumn { line: end.line, column: end.column },
+        ))
     }
 
     /// The span of the invocation of the current procedural macro.
@@ -439,8 +447,7 @@ impl Span {
     /// The original source file into which this span points.
     ///
     /// This method is semver exempt and not exposed by default.
-    #[cfg(procmacro2_semver_exempt)]
-    #[cfg_attr(doc_cfg, doc(cfg(procmacro2_semver_exempt)))]
+    #[cfg(span_locations)]
     pub fn source_file(&self) -> SourceFile {
         SourceFile::_new(self.inner.source_file())
     }
@@ -924,8 +931,6 @@ impl Ident {
     /// Same as `Ident::new`, but creates a raw identifier (`r#ident`).
     ///
     /// This method is semver exempt and not exposed by default.
-    #[cfg(procmacro2_semver_exempt)]
-    #[cfg_attr(doc_cfg, doc(cfg(procmacro2_semver_exempt)))]
     pub fn new_raw(string: &str, span: Span) -> Ident {
         Ident::_new_raw(string, span)
     }
